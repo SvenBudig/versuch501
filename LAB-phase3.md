@@ -46,13 +46,13 @@ style: |
 **Build, tag for ttl.sh, and push:**
 ```bash
 # Build container image
-docker build -f src/docker/Dockerfile -t supply-chain-app:latest src/
+task build-image
 
 # Tag for ttl.sh (ephemeral registry, 1-hour TTL)
-docker tag supply-chain-app:latest ttl.sh/supply-chain-app-$(whoami):1h
+docker tag supply-chain-app:latest ttl.sh/supply-chain-app-$(hostname):3h
 
 # Push and capture digest
-docker push ttl.sh/supply-chain-app-$(whoami):1h 2>&1 | tee /tmp/push-output.txt
+docker push ttl.sh/supply-chain-app-$(hostname):3h 2>&1 | tee /tmp/push-output.txt
 ```
 
 ---
@@ -63,13 +63,13 @@ docker push ttl.sh/supply-chain-app-$(whoami):1h 2>&1 | tee /tmp/push-output.txt
 ```bash
 # Automated extraction
 export DIGEST=$(grep "digest:" /tmp/push-output.txt | awk '{print $3}')
-export IMAGE=ttl.sh/supply-chain-app-$(whoami)@$DIGEST
+export IMAGE=ttl.sh/supply-chain-app-$(hostname)@$DIGEST
 
 # Verify it worked
 echo "Image: $IMAGE"
 ```
 
-**Why digest not tag?** ttl.sh uses tags for TTL (`:1h`), Cosign requires digest references.
+**Why digest not tag?** ttl.sh uses tags for TTL (`:3h`), Cosign requires digest references.
 
 **Checkpoint:** `echo $IMAGE` shows `ttl.sh/supply-chain-app-yourname@sha256:...`
 
@@ -140,15 +140,6 @@ task exec -- cosign tree --experimental-oci11 $IMAGE
 - Read operations require `--experimental-oci11` flag in cosign v3
 - This will be the only mode in cosign v4 (flag will be default)
 
----
-
-# Understanding OCI 1.1 (Continued)
-
-**Why the flag?**
-- Ensures backwards compatibility with older registries
-- You're learning the future standard!
-- ttl.sh registry supports OCI 1.1 referrers
-
 **Note:** Some older cosign commands (like `cosign download attestation`) don't support OCI 1.1 mode. Use `cosign verify-attestation` instead, which retrieves and verifies the full attestation.
 
 ---
@@ -160,9 +151,7 @@ task exec -- cosign tree --experimental-oci11 $IMAGE
 task exec -- cosign verify --experimental-oci11 \
   --certificate-identity-regexp=".*" \
   --certificate-oidc-issuer-regexp=".*" \
-  $IMAGE > /tmp/signature.json
-
-cat /tmp/signature.json | jq
+  $IMAGE | jq
 ```
 
 ---
@@ -192,20 +181,30 @@ cat /tmp/signature.json | jq
 
 ---
 
-# Exercise 3.3: Examine Certificate (Optional)
+# Exercise 3.3: Examine Certificate
 
 **Step 3 - Extract certificate details from Rekor:**
 ```bash
 HASH=$(echo $DIGEST | cut -d: -f2)
-UUID=$(rekor-cli search --sha $HASH | head -1)
-task exec -- rekor-cli get --uuid $UUID --format json | jq -r '.Body.DSSEObj.signatures[0].verifier' | base64 -d | openssl x509 -text -noout | grep -A2 "Subject Alternative Name"
+UUID=$(task exec -- rekor-cli search --sha $HASH | head -1)
+
+# Download and print rekor record 
+task exec -- rekor-cli get --uuid $UUID --format json | jq --color-output | tee /tmp/rekor.json
+
+# Extract short-living certificate issued by fulcio
+cat /tmp/rekor.json | jq -r '.Body.DSSEObj.signatures[0].verifier' | base64 -d | openssl x509 -text -noout | grep --color=always -E 'Issuer|Subject Alternative Name|Before|After|email|github|$'
 ```
 
 **Output shows your identity:**
 ```
-X509v3 Subject Alternative Name: critical
-    email:yourname@example.com
-Issuer: CN=sigstore-intermediate,O=sigstore.dev
+      X509v3 Authority Key Identifier:
+          DF:D3:E9:CF:56:24:11:96:F9:A8:D8:E9:28:55:A2:C6:2E:18:64:3F
+      X509v3 Subject Alternative Name: critical
+          email:nestorandres.rodriguez@thi.de
+      1.3.6.1.4.1.57264.1.1:
+          https://github.com/login/oauth
+      1.3.6.1.4.1.57264.1.8:
+          ..https://github.com/login/oauth
 ```
 
 ---
@@ -213,8 +212,8 @@ Issuer: CN=sigstore-intermediate,O=sigstore.dev
 # Exercise 3.3: Certificate Details
 
 **Look for in output:**
-- `"subject"` - Your email address
-- `"issuer"` - OIDC provider URL
+- `"email"` - Your email address
+- `"1.3.6.1.4.1.57264.1.1"` - OIDC provider URL - Issuer extension from Fulcio
 - `"notBefore"` / `"notAfter"` - Certificate validity (10 min!)
 
 **Key Insight:** Your identity is now **permanently bound** to this image!
@@ -255,36 +254,22 @@ task exec -- cosign tree --experimental-oci11 $IMAGE
 
 # Exercise 3.4: View Attestation
 
-**Step 2 - View attestation:**
+**Step 2 - View and Verify attestation:**
 ```bash
+# Download attestation file
 task exec -- cosign verify-attestation --experimental-oci11 \
   --type slsaprovenance \
   --certificate-identity-regexp=".*" \
   --certificate-oidc-issuer-regexp=".*" \
-  $IMAGE | jq
+  $IMAGE | jq | tee /tmp/provenance-attestation.json
+
+# extract uploaded signed payload
+cat /tmp/provenance-attestation.json | jq -r '.payload' | base64 -d | jq
 ```
 
 **Note:** In OCI 1.1 mode, `cosign verify-attestation` retrieves and verifies the full attestation envelope.
 
 **📖 Theory Reference:** CONCEPTS.md - Section 5 (in-toto envelope structure)
-
----
-
-# Exercise 3.4: Verify Attestation
-
-**Step 3 - Verify attestation:**
-```bash
-task exec -- cosign verify-attestation --experimental-oci11 \
-  --type slsaprovenance \
-  --certificate-identity-regexp=".*" \
-  --certificate-oidc-issuer-regexp=".*" \
-  $IMAGE | jq
-```
-
-**Output shows:**
-- Certificate with your identity
-- Provenance predicate decoded
-- Verification status: ✅ Valid
 
 ---
 
@@ -296,7 +281,7 @@ task exec -- cosign verify-attestation --experimental-oci11 \
 ```bash
 task exec -- cosign attest --yes \
   --type spdxjson \
-  --predicate attestations/sbom-attestation.json \
+  --predicate attestations/sbom.json \
   $IMAGE
 ```
 
@@ -377,7 +362,7 @@ task exec -- cosign verify-attestation --experimental-oci11 \
   --type vuln \
   --certificate-identity-regexp=".*" \
   --certificate-oidc-issuer-regexp=".*" \
-  $IMAGE | jq '.payload' | base64 -d | jq
+  $IMAGE | jq 
 ```
 
 **Note:** The `--type` parameter filters to specific attestation types. Multiple `vuln` attestations will all be returned.
@@ -407,13 +392,7 @@ Found matching entries (listed by UUID):
 abc123...
 def456...
 ghi789...
-... (6 entries total)
-```
-
-**Command 2 - Count entries:**
-```bash
-HASH=$(echo $IMAGE | cut -d@ -f2 | cut -d: -f2)
-task exec -- rekor-cli search --sha $HASH | wc -l
+...
 ```
 
 **Expected:** 6 entries
@@ -425,7 +404,6 @@ task exec -- rekor-cli search --sha $HASH | wc -l
 **Get details of one entry:**
 ```bash
 # Get first UUID from search results
-HASH=$(echo $IMAGE | cut -d@ -f2 | cut -d: -f2)
 UUID=$(task exec -- rekor-cli search --sha $HASH | head -1)
 task exec -- rekor-cli get --uuid $UUID
 ```
@@ -460,7 +438,7 @@ task exec -- rekor-cli get --uuid $UUID
 ```bash
 # Set variables if needed
 export DIGEST=sha256:abc123...
-export IMAGE=ttl.sh/supply-chain-app-$(whoami)@$DIGEST
+export IMAGE=ttl.sh/supply-chain-app-$(hostname)@$DIGEST
 
 # Run validation
 task validate:phase3
@@ -474,15 +452,13 @@ task validate:phase3
 
 ---
 
-# Next Steps: Phase 4
+# Future Topics
 
-**Phase 4: Verification & Policy Enforcement**
+**Verification & Policy Enforcement**
 
-You'll learn:
+- Automation over CI/CD Pipeline in Github
 - Policy-based verification (only accept images from trusted identities)
-- Attestation verification in CI/CD
 - Admission control for Kubernetes
-- Comparison: Manual inspection vs automated verification
 
 **Preview Question:** "Now that everything is signed, how do we enforce policies like 'only deploy images signed by our team'?"
 

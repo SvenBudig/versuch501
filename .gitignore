@@ -4,7 +4,8 @@ vms
 vms/
 attestations/
 solutions/
-
+opencode.json
+playwright-config.json
 # Python
 __pycache__/
 *.py[cod]

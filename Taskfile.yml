@@ -44,10 +44,10 @@ tasks:
     cmds:
       - "{{.DOCKER_RUN}} task _scan-deps"
 
-  scan-containers:
-    desc: "🐳 Scan containers in Docker"
+  scan-dockerfile:
+    desc: "🐳 Scan Dockerfile in Docker"
     cmds:
-      - "{{.DOCKER_RUN}} task _scan-containers"
+      - "{{.DOCKER_RUN}} task _scan-dockerfile"
 
   scan-iac:
     desc: "🏗️ Scan IaC in Docker"
@@ -75,6 +75,19 @@ tasks:
       - echo "Building container image..."
       - docker build -f src/docker/Dockerfile -t supply-chain-app:latest src/
       - echo "Container image built successfully"
+
+  build-image-with-attestation:
+    desc: "🏗️ Build container image with provenance"
+    cmds:
+      - export BUILDX_METADATA_PROVENANCE=max BUILDX_GIT_INFO=1 BUILDX_GIT_LABELS=1 BUILDER_ID="$(whoami)@$(hostname)"
+      - echo "Building container image with attestation artifacts..."
+      - docker buildx build --provenance=mode=max,builder-id="azureuser@vm-lab-nestor" --sbom=true -o type=local,dest=./out -f src/docker/Dockerfile src
+      - echo "Container with attestation built successfully"
+
+  scan-image:
+    desc: "🔍 Scan built container image for vulnerabilities"
+    cmds:
+      - "{{.DOCKER_RUN_WITH_SOCKET}} task _scan-image"
 
   exec:
     desc: "🔧 Execute command inside supply-chain-tools container (e.g., task exec -- cosign sign --yes $IMAGE)"
@@ -259,29 +272,31 @@ tasks:
     cmds:
       - task _scan-source
       - task _scan-deps
-      - task _scan-containers
+      - task _scan-dockerfile
       - task _scan-iac
       - task _scan-manifests
       - echo "📊 All scans complete"
 
   _scan-source:
-    # Internal: Scan source code with Semgrep
+    # Internal: Scan source code with Bandit
     cmds:
       - echo "📝 Scanning source code..."
-      - semgrep --config=auto src/app/
+      - echo "ℹ️ Using Bandit to scan for hardcoded secrets, SQL injection, and other code security issues"
+      - bandit -r src/app/main.py --exclude src/app/.venv
 
   _scan-deps:
-    # Internal: Scan dependencies with Bandit
+    # Internal: Scan dependencies with Trivy
     cmds:
       - echo "📦 Scanning dependencies..."
-      - echo "ℹ️ Using Bandit to scan for security issues in Python dependencies and code"
-      - bandit -r src/app/main.py -f json || echo "⚠️ Found security issues in dependencies (expected in this lab)"
+      - echo "ℹ️ Using Trivy to scan for vulnerable dependencies"
+      - trivy fs --scanners vuln --severity HIGH,CRITICAL src/app/
 
-  _scan-containers:
-    # Internal: Scan Dockerfile with Hadolint
+  _scan-dockerfile:
+    # Internal: Scan Dockerfile configuration with Trivy
     cmds:
-      - echo "🐳 Scanning containers..."
-      - hadolint src/docker/Dockerfile
+      - echo "🐳 Scanning Dockerfile..."
+      - echo "ℹ️ Using Trivy to scan for Dockerfile misconfigurations"
+      - trivy config src/docker/Dockerfile
 
   _scan-iac:
     # Internal: Scan Infrastructure as Code with Checkov
@@ -293,7 +308,14 @@ tasks:
     # Internal: Scan Kubernetes manifests with Trivy
     cmds:
       - echo "☸️ Scanning manifests..."
-      - trivy config src/k8s/
+      - trivy config src/k8s/ --severity HIGH,CRITICAL
+
+  _scan-image:
+    # Internal: Scan container image with Trivy
+    cmds:
+      - echo "🔍 Scanning container image..."
+      - echo "ℹ️ Using Trivy to scan for vulnerabilities in built image"
+      - trivy image supply-chain-app:latest --scanners vuln --severity HIGH,CRITICAL
 
   _generate-sbom:
     # Internal: Generate Software Bill of Materials with Syft

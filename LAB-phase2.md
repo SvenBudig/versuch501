@@ -30,10 +30,20 @@ style: |
 - Generate vulnerability attestations
 - Understand attestation structure
 
-**Prerequisites:**
+---
+
+# Prerequisites
+
 - Phase 1 completed
 - All vulnerabilities fixed
 - Docker image built
+
+**Install docker-container driver for SBOM and Provenance generation**
+
+```bash
+docker buildx create --name container-builder --driver docker-container --use
+docker buildx inspect --bootstrap
+```
 
 **📖 Theory Reference:** See CONCEPTS.md - Sections 4 (SLSA) & 5 (in-toto Attestations)
 
@@ -43,39 +53,37 @@ style: |
 
 **Generate Provenance:**
 ```bash
-./scripts/generate-provenance.sh supply-chain-app:latest > attestations/provenance.json
+# Build image with attestation artifacts in out/ folder
+task build-image-with-attestation
+
+# Create destination folder for attestations
+mkdir -p attestations
+
+# Extract provenance report
+cat out/provenance.json | jq .predicate | tee attestations/provenance.json
 ```
 
 **What It Captures:** Builder identity, Git commit SHA, build timestamps, materials
 
 ---
 
-# Exercise 2.1: Review Provenance
-
-**Inspect the Generated Attestation:**
-```bash
-# View the full attestation
-cat attestations/provenance.json | jq
-
-# Check builder identity
-jq '.predicate.builder.id' attestations/provenance.json
-
-# Check git commit
-jq '.predicate.materials[0].uri' attestations/provenance.json
-jq '.predicate.materials[0].digest.sha1' attestations/provenance.json
-```
-
----
-
-# Exercise 2.1: Review Provenance (Continued)
+# Exercise 2.1: Inspect Provenance
 
 ```bash
-# Check timestamps
-jq '.predicate.metadata.buildStartedOn' attestations/provenance.json
-jq '.predicate.metadata.buildFinishedOn' attestations/provenance.json
+jq '__json_path__' attestations/provenance.json
 ```
 
-**Expected:** You should see your VM hostname, git commit SHA, and build timestamps
+| Question / Meaning              | `__json_path__`                                                            |
+|---------------------------------|----------------------------------------------------------------------------|
+| **Who built it?**              | `.builder.id`                                                             |
+| **What build system/type?**    | `.buildType`                                                              |
+| **With what inputs (materials)?** | `.materials[]`                                                          |
+| **How was it invoked (params)?** | `.invocation.parameters`                                                |
+| **Where are build instructions from?** | `.invocation.configSource`                                        |
+| **How exactly was it built (steps)?** | `.buildConfig.llbDefinition[]`                                     |
+| **When was it built?**         | `.metadata.buildStartedOn`, `.metadata.buildFinishedOn`                   |
+| **Is it complete / reproducible?** | `.metadata.completeness`, `.metadata.reproducible`                  |
+| **Git repo & commit (VCS info)** | `.metadata."https://mobyproject.org/buildkit@v1#metadata".vcs`                 |
 
 ---
 
@@ -93,55 +101,26 @@ task validate:provenance
 
 ---
 
-# Exercise 2.1: Validate (Continued)
+# Exercise 2.2: Extract SBOM Attestations
 
-- ✅ Required fields: builder.id, timestamps, materials
-- ✅ Subject contains image name and digest
-
-**Expected Output:**
-```
-✅ SLSA provenance attestation is valid
-   Builder: student@vm-hostname
-   Materials: 1
-   Subject: supply-chain-app:latest
-```
-
----
-
-# Exercise 2.2: Generate SBOM Attestation
-
-**Generate SBOM Attestation:**
 ```bash
-./scripts/generate-sbom-attestation.sh supply-chain-app:latest > attestations/sbom.json
-```
+# Extract to destination directory (required for later!)
+jq '.predicate' out/sbom.spdx.json > attestations/sbom.json
 
-**Note:** Large file (~2MB) with all package details. Syft generates SPDX format, wrapped in in-toto Statement.
-
----
-
-# Exercise 2.2: Review SBOM
-
-**Inspect the SBOM Attestation:**
-```bash
 # View SBOM structure (too large to view entirely)
 jq 'keys' attestations/sbom.json
 
 # Check SPDX version
-jq '.predicate.spdxVersion' attestations/sbom.json
+jq '.spdxVersion' attestations/sbom.json
 
 # Count packages
-jq '.predicate.packages | length' attestations/sbom.json
+jq '.packages | length' attestations/sbom.json
+
+# Inspect some packages
+jq '.packages[5:20] | .[] | {name, versionInfo}' attestations/sbom.json
 ```
 
----
-
-# Exercise 2.2: Review SBOM (Continued)
-
-```bash
-# View first 3 packages
-jq '.predicate.packages[0:3] | .[] | {name, versionInfo}' attestations/sbom.json
-```
-
+**Note:** Large file (~2MB) with all package details. Syft generates SPDX format, wrapped in in-toto Statement.
 **Expected:** ~100+ packages (Python, system libs, dependencies)
 
 ---
@@ -157,11 +136,6 @@ task validate:sbom
 - ✅ Valid JSON syntax
 - ✅ Correct in-toto Statement structure
 - ✅ PredicateType = `https://spdx.dev/Document`
-
----
-
-# Exercise 2.2: Validate (Continued)
-
 - ✅ Valid SPDX document with packages
 - ✅ Subject matches image name
 
@@ -188,75 +162,48 @@ task validate:sbom
 
 ---
 
-# Exercise 2.3a: Source Vulnerability Attestation
+# Exercise 2.3: Commands
 
-**Scan Source Code & Dependencies:**
 ```bash
-# Generate source vulnerability attestation
-./scripts/generate-vuln-attestation.sh fs src/ > attestations/vuln-source.json
 
-# Validate
-task validate:vuln-source
+# Export dependencies scan report from source code to in-toto format 
+task exec -- trivy fs --format cosign-vuln src/ > attestations/vuln-source.json
+
+# Export vulnerabilities in IaC artifacts
+task exec -- trivy config --format cosign-vuln src/iac/ > attestations/vuln-iac.json
+
+# Export dependencies scan report from source code to in-toto format 
+task exec -- trivy image --format cosign-vuln supply-chain-app:latest> attestations/vuln-image.json
+
 ```
 
-**Expected Result:** Zero vulnerabilities (Phase 1 fixes applied!)
-
----
-
-# Exercise 2.3b: IaC Vulnerability Attestation
-
-**Scan Infrastructure as Code:**
-```bash
-# Generate IaC vulnerability attestation
-./scripts/generate-vuln-attestation.sh config src/iac/ > attestations/vuln-iac.json
-
-# Validate
-task validate:vuln-iac
-```
-
-**Expected Result:** Zero misconfigurations (Phase 1 fixes applied)
-
----
-
-# Exercise 2.3c: Container Image Attestation
-
-**Scan Container Image:**
-```bash
-./scripts/generate-vuln-attestation.sh image supply-chain-app:latest > attestations/vuln-image.json
-
-task validate:vuln-image
-```
-
-**Expected Result:** Zero vulnerabilities (Phase 1 fixes applied)
+**Note:** `task exec -- $command $arg1 $arg2 ... $argn` executes the command inside the build-&-tools container
 
 ---
 
 # Exercise 2.3: Review All Vulnerability Attestations
 
-**List All Attestations:**
+**List All Vulnerability Attestations:**
 ```bash
 ls -lh attestations/vuln-*.json
 ```
 
-**Inspect One Attestation Structure:**
+**Inspect Attestation Structure:**
 ```bash
+
+# Explore structure
+jq 'keys' attestations/vuln-source.json
+
 # View scanner information
-jq '.predicate.scanner' attestations/vuln-source.json
+jq '.scanner' attestations/vuln-source.json
 
 # View scan metadata
-jq '.predicate.metadata' attestations/vuln-source.json
+jq '.metadata' attestations/vuln-source.json
+
+# explore vulnerabilities
+jq '.scanner.result.Results[].Vulnerabilities // []' attestations/vuln-image.json
+jq '.scanner.result.Results[].Vulnerabilities // []' attestations/vuln-iac.json # None
 ```
-
----
-
-# Exercise 2.3: Review (Continued)
-
-```bash
-# Check vulnerability count (should be empty arrays)
-jq '.predicate.scanner.result.Results[].Vulnerabilities // []' attestations/vuln-source.json
-```
-
-**Key Observation:** All scans show zero issues because you fixed them in Phase 1!
 
 *📖 Note: Trivy's `--format cosign-vuln` outputs standard in-toto Statement + CosignVulnerabilityReport predicate, compatible with Sigstore/Cosign toolchain.*
 
@@ -278,22 +225,11 @@ ls -lh attestations/
 
 ---
 
-# Exercise 2.4: Review (Continued)
+# Exercise 2.4: Validation Output
 
-**Total:** 5 attestations documenting your secure build process
-
----
-
-# Exercise 2.4: Validate All Attestations
-
-**Run Complete Validation:**
 ```bash
 task validate:all-attestations
 ```
-
----
-
-# Exercise 2.4: Validation Output
 
 **Expected Output:**
 ```
@@ -318,15 +254,6 @@ All attestations validated successfully!
 - Validated all attestation structures
 - Understood in-toto Statement format
 
----
-
-# Phase 2 Summary (Continued)
-
-**Current State:**
-- Phase 1: Vulnerabilities fixed ✅
-- Phase 2: Attestations generated ✅
-- Next: Sign these attestations (Phase 3)
-
 **Why This Matters:** Attestations provide verifiable proof for CI/CD gates, compliance, supply chain attack detection, and license compliance.
 
 *📖 See CONCEPTS.md Sections 4 & 5*
@@ -340,7 +267,5 @@ All attestations validated successfully!
 - [ ] `task validate:all-attestations` passes
 - [ ] You understand in-toto Statement structure
 - [ ] You can explain what each attestation type contains
-
-**Questions?** Review example files in `lab-files/2.*`
 
 **Ready?** Move to Phase 3: Signing with Keyless Authentication

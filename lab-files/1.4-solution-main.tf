@@ -1,9 +1,5 @@
-resource "aws_s3_bucket" "app_bucket" {
+resource "aws_s3_bucket_public_access_block" "app_bucket_block" {
   bucket = "my-app-bucket"
-}
-
-resource "aws_s3_bucket_public_access_block" "app_bucket" {
-  bucket = aws_s3_bucket.app_bucket.id
   
   # Fixed: Block all public access (4 settings = true)
   block_public_acls       = true
@@ -13,9 +9,11 @@ resource "aws_s3_bucket_public_access_block" "app_bucket" {
 }
 
 resource "aws_security_group" "app_sg" {
-  name = "app-sg"
+  name        = "app-sg"
+  description = "Security group for app"
 
   ingress {
+    description = "SSH access"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"

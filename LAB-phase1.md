@@ -30,17 +30,74 @@ Secure your software supply chain from source to deployment
 
 ---
 
-## Prerequisites
+## Prerequisites - Warm-Up
 
 **Install Required Tools:**
 ```bash
 # Install task runner
 sudo snap install task --classic 2>&1 && task --version
 
+# Install gh cli
+curl -sS https://webi.sh/gh | sh;
+echo 'source ~/.config/envman/PATH.env' >> ~/.zshrc
+source ~/.config/envman/PATH.env
+
+# Install gitsign
+cd /tmp && wget https://github.com/sigstore/gitsign/releases/download/v0.13.0/gitsign_0.13.0_linux_amd64
+sudo mv gitsign_0.13.0_linux_amd64 /usr/local/bin/gitsign && sudo chmod +x /usr/local/bin/gitsign
+
 # Verify all tools
 task --version  # Should show v3.x.x
 docker --version
 git --version
+gh --version
+gitsign --version  # Should show v0.13.0
+```
+
+---
+
+# Step 0: Setup Git & Fork Repository
+
+```bash
+# Authenticate & setup SSH
+gh auth login  # Choose: GitHub.com → SSH → Generate new key → Browser auth
+
+# Clone the lab repository
+git clone git@github.com:thi-ics/supply-chain-lab.git
+cd supply-chain-lab
+
+# Manual fork: Change remote to YOUR fork (replace YOUR_USERNAME)
+git remote set-url origin git@github.com:YOUR_USERNAME/supply-chain-lab.git
+git remote -v  # Verify origin points to your fork
+
+# Configure identity (use YOUR email)
+export EMAIL="your.email@example.com"
+git config --global user.name "Your Name"
+git config --global user.email "$EMAIL"
+
+# Configure gitsign
+git config --local gpg.x509.program gitsign
+git config --local gpg.format x509
+git config --local commit.gpgsign true
+git config --local gitsign.connectorID https://github.com/login/oauth
+```
+
+---
+
+# Step 1: Test Signed Commit
+
+```bash
+echo "Hello My Favorite Lab Ever :)" > my_first_signed_commit.txt
+git add my_first_signed_commit.txt
+git commit -m "feat: my first keyless signed commit"
+# Device flow: Copy OAuth URL → browser auth → paste code
+git push origin main
+```
+
+**Inspect certificate:**
+```bash
+UUID=$(task exec -- rekor-cli search --email $EMAIL | tail -1)
+task exec -- rekor-cli get --uuid $UUID --format json | jq -r '.Body.DSSEObj.signatures[0].verifier' | base64 -d | openssl x509 -text -noout
 ```
 
 ---
@@ -62,7 +119,7 @@ git --version
 
 **Commands:**
 ```bash
-task scan-all > logs/1.1-scan-all.log
+task scan-all
 ```
 
 ---
@@ -71,11 +128,17 @@ task scan-all > logs/1.1-scan-all.log
 
 Run scans separately:
 ```bash
-task scan-source > logs/1.1-source.log
-task scan-deps > logs/1.1-deps.log
-task scan-containers > logs/1.1-containers.log
-task scan-iac > logs/1.1-iac.log
-task scan-manifests > logs/1.1-manifests.log
+task scan-source
+task scan-deps
+task scan-dockerfile
+task scan-iac 
+task scan-manifests
+```
+
+Build and scan the container image:
+```bash
+task build-image
+task scan-image
 ```
 
 ---
@@ -84,9 +147,11 @@ task scan-manifests > logs/1.1-manifests.log
 
 **What you should see:**
 - ❌ Source code: Hardcoded secrets, SQL injection
-- ❌ Containers: Outdated base image, running as root
-- ❌ IaC: Public S3 bucket, SSH from 0.0.0.0/0
-- ❌ K8s: Privileged mode, running as root
+- ❌ Dependencies: Vulnerable Flask 2.0.1 (CVE-2023-30861)
+- ❌ Dockerfile: Running as root (HIGH), missing HEALTHCHECK (LOW)
+- ❌ IaC: 6 failures (4 S3 public access, 1 SSH from 0.0.0.0/0, 1 unattached security group)
+- ❌ K8s: 3 HIGH (privileged mode, running as root, read-only filesystem)
+- ❌ Image: 907 vulnerabilities (56 CRITICAL, 851 HIGH) in Python 3.8 base image (~3900 total if including all severities)
 
 **Questions to Consider:**
 - Which vulnerabilities are most critical?
@@ -96,88 +161,76 @@ task scan-manifests > logs/1.1-manifests.log
 ---
 
 # Exercise 1.2: Fix Source Code Vulnerabilities
-## Part 1/5
+## Part 1/6
 
 **File:** `src/app/main.py`
 
 **Vulnerabilities Found:**
-- Line 7: Hardcoded API key `sk-1234567890abcdef`
+- Line 7: Hardcoded API token `sk-1234567890abcdef`
 - Line 13: SQL injection via string formatting
-- Line 19: API key exposed in health endpoint
 
 ---
 
 # Exercise 1.2: Hints
 
 **Fix #1 - Hardcoded Secret:**
-- Use environment variable: `os.environ.get('API_KEY', 'default')`
-- Remove secret from health endpoint response
+- Use environment variable: `os.environ.get('API_TOKEN', 'default')`
 
 **Fix #2 - SQL Injection:**
 - Use parameterized query: `query = "SELECT * FROM users WHERE id = ?"`
 - Pass parameters: `conn.execute(query, (user_id,))`
 
-**Verify:** `task test`
+**Verify:** `task scan-source`
 
 ---
 
-# Exercise 1.2: Solution
+# Exercise 1.2: Fix Dependency Vulnerabilities
+## Part 2/6
 
-**See full solution:** `lab-files/1.2-solution-main.py`
+**File:** `src/app/pyproject.toml`
 
-**Key changes:**
-```python
-# Use environment variable
-API_KEY = os.environ.get('API_KEY', 'default-key-for-testing')
+**Vulnerability:** Flask 2.0.1 (CVE-2023-30861)
 
-# Parameterized query
-query = "SELECT * FROM users WHERE id = ?"
-result = conn.execute(query, (user_id,)).fetchone()
-
-# Don't expose secret
-return {"status": "ok"}
+**Fix:** Update Flask to 3.1.0+
+```toml
+  "flask>=3.1.0",
 ```
+
+**Verify:** `task build && task scan-deps`
 
 ---
 
 # Exercise 1.3: Fix Container Vulnerabilities
-## Part 2/5
+## Part 3/6
 
 **File:** `src/docker/Dockerfile`
 
 **Vulnerabilities Found:**
-- Line 2: Outdated base image `python:3.8`
-- Line 7: Running as root (no USER directive)
+- Outdated base image `python:3.8` (907 HIGH/CRITICAL, ~3900 total)
+- Running as root (HIGH)
+- Missing HEALTHCHECK (LOW)
 
 ---
 
 # Exercise 1.3: Hints
 
 **Fix #1 - Base Image:**
-- Use recent slim image: `FROM python:3.12-slim`
+- Change to `FROM python:3.12-slim`
+- Reduces 907 → 3 HIGH vulnerabilities
 
 **Fix #2 - Root User:**
-- Create non-root user: `useradd -m -u 1000 appuser`
-- Change ownership: `chown -R appuser:appuser /app`
-- Switch user: `USER appuser`
-
-**Verify:** `task scan-containers`
-
----
-
-# Exercise 1.3: Solution
-
-**See full solution:** `lab-files/1.3-solution-Dockerfile`
-
-**Key changes:**
 ```dockerfile
-FROM python:3.12-slim
-# ... install commands ...
 RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
-
 USER appuser
 ```
+
+**Fix #3 - Filter LOW Severity:**
+- Edit `Taskfile.yml` task `_scan-dockerfile`
+- Add `--severity MEDIUM,HIGH,CRITICAL` to trivy command
+- Filters out LOW severity issues (e.g., HEALTHCHECK)
+
+**Verify:** `task scan-dockerfile && task build-image && task scan-image`
 
 ---
 
@@ -186,9 +239,10 @@ USER appuser
 
 **File:** `src/iac/main.tf`
 
-**Vulnerabilities Found:**
-- Lines 8-11: Public S3 bucket (all 4 settings = false)
-- Line 21: SSH accessible from anywhere (0.0.0.0/0)
+**Vulnerabilities Found (6 failures):**
+- Public S3 bucket (4 checks: block_public_acls, block_public_policy, ignore_public_acls, restrict_public_buckets = false)
+- SSH accessible from 0.0.0.0/0
+- Security group not attached (CKV2_AWS_5 - infrastructure completeness check)
 
 ---
 
@@ -198,26 +252,13 @@ USER appuser
 - Set all 4 public access blocks to `true`
 
 **Fix #2 - SSH Access:**
-- Restrict CIDR block to specific IP range
-- Example: `["203.0.113.0/24"]` or your organization's range
+- Restrict CIDR to specific IP: `["203.0.113.0/24"]`
 
-**Verify:** `task scan-iac`
+**Fix #3 - Skip Infrastructure Check:**
+The CKV2_AWS_5 check requires security groups to be attached to EC2 instances. Since this is a standalone example, we can skip this check:
+- Add `--skip-check CKV2_AWS_5` to the checkov command in `Taskfile.yml` (line 297)
 
----
-
-# Exercise 1.4: Solution
-
-**See full solution:** `lab-files/1.4-solution-main.tf`
-
-**Key changes:**
-```hcl
-block_public_acls       = true
-block_public_policy     = true
-ignore_public_acls      = true
-restrict_public_buckets = true
-
-cidr_blocks = ["203.0.113.0/24"]  # Specific range
-```
+**Verify:** `task scan-iac` (expect 0 failures)
 
 ---
 
@@ -226,34 +267,32 @@ cidr_blocks = ["203.0.113.0/24"]  # Specific range
 
 **File:** `src/k8s/deployment.yaml`
 
-**Vulnerabilities Found:**
-- Line 21: `privileged: true` (dangerous!)
-- Line 22: `runAsUser: 0` (running as root)
+**Vulnerabilities Found (3 HIGH):**
+- `privileged: true` (container can access host resources)
+- `runAsUser: 0` (running as root)
+- Missing `readOnlyRootFilesystem` (filesystem tampering risk)
 
 ---
 
 # Exercise 1.5: Hints
 
-**Security Settings:**
-- Set `privileged: false` 
-- Add `runAsNonRoot: true` and `runAsUser: 1000`
-
-**Additional:** Drop capabilities and prevent privilege escalation
-
-**Verify:** `task scan-manifests`
-
----
-
-# Exercise 1.5: Solution
-
-**Full solution:** `lab-files/1.5-solution-deployment.yaml`
-
+**Step 1: Add pod-level securityContext (line 14, after `spec:`):**
 ```yaml
-securityContext:
-  privileged: false
-  runAsNonRoot: true
-  runAsUser: 1000
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
 ```
+
+**Step 2: Fix container securityContext (lines 20-22):**
+```yaml
+        securityContext:
+          privileged: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+```
+
+**Verify:** `task scan-manifests` (expect 0 HIGH/CRITICAL)
 
 ---
 
@@ -264,8 +303,8 @@ securityContext:
 
 **Commands:**
 ```bash
-task build > logs/1.6-build.log
-task build-image > logs/1.6-build-image.log
+task build
+task build-image
 ```
 
 **Expected Output:**
@@ -312,6 +351,26 @@ Scanning finds problems, but attestations **prove** you fixed them and **documen
 - [ ] Application builds successfully
 - [ ] Container image builds successfully
 
-**Questions?** Review the solution files in `lab-files/`
-
 **Ready?** Move to Phase 2 when checkpoint complete
+
+---
+
+# Final: Commit Your Lab Work
+
+```bash
+git add src/app/main.py src/app/pyproject.toml src/docker/Dockerfile \
+        src/iac/main.tf src/k8s/deployment.yaml Taskfile.yml
+git commit -m "fix: resolve all Phase 1 security vulnerabilities"
+git push origin main
+```
+
+**Verify both commits in Rekor:**
+```bash
+task exec -- rekor-cli search --email $EMAIL  # Should show 2 entries
+
+# Inspect latest certificate
+UUID=$(task exec -- rekor-cli search --email $EMAIL | tail -1)
+task exec -- rekor-cli get --uuid $UUID --format json | jq -r '.Body.DSSEObj.signatures[0].verifier' | base64 -d | openssl x509 -text -noout
+```
+
+**✅ Phase 1 Complete** - Move to Phase 2
