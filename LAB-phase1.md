@@ -119,6 +119,7 @@ task exec -- rekor-cli get --uuid $UUID --format json | jq -r '.Body.DSSEObj.sig
 
 **Commands:**
 ```bash
+task build-tools
 task scan-all
 ```
 
