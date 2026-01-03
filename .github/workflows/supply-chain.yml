@@ -212,7 +212,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           set -euo pipefail
-          cosign sign --yes "${IMAGE}"
+          cosign sign --yes --tlog-upload=true "${IMAGE}"
 
       # Signatur verifizieren und Identität anzeigen
       - name: Signatur verifizieren und Identity anzeigen
