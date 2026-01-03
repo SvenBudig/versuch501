@@ -146,8 +146,9 @@ jobs:
           set -euo pipefail
           task validate:all-attestations
 
-            # -------------------------
+           # -------------------------
       # Phase 3: Signieren + Transparenz (Fulcio / Rekor) + Verifikation
+      # (ohne task exec, damit GHCR-Login des Runners genutzt wird)
       # -------------------------
 
       # Cosign installieren (Sigstore Client)
@@ -168,7 +169,7 @@ jobs:
           rekor-cli version
           cosign version
 
-      # In GHCR einloggen (für Push + späteren Pull durch Cosign)
+      # In GHCR einloggen (für Push + Pull/Resolve durch Cosign)
       - name: Login bei GHCR
         uses: docker/login-action@v3
         with:
@@ -183,9 +184,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          # GHCR verlangt lowercase repository-Namen
           OWNER_RAW="${{ github.repository_owner }}"
           OWNER="$(echo "${OWNER_RAW}" | tr '[:upper:]' '[:lower:]')"
 
+          # Image-Name bleibt bewusst "supply-chain-app"
           IMAGE_REPO="ghcr.io/${OWNER}/supply-chain-app"
           TAG="${{ github.sha }}"
 
@@ -205,44 +208,36 @@ jobs:
 
           echo "Image: ${IMAGE}"
 
-      # Container-Image signieren (keyless via GitHub OIDC + Fulcio)
-      - name: Container-Image signieren (Cosign, keyless)
+      # Image signieren (keyless via GitHub OIDC + Fulcio) und direkt verifizieren
+      # Hinweis: validate:phase3 erwartet, dass eine Image-Signatur (cosign/sign/v1) am Digest sichtbar ist.
+      - name: Container-Image signieren + verifizieren (Cosign, keyless)
         shell: bash
         env:
           COSIGN_EXPERIMENTAL: "true"
         run: |
           set -euo pipefail
+
+          # 1) Image signieren und Rekor Upload erzwingen
           cosign sign --yes --tlog-upload=true "${IMAGE}"
 
-      # Signatur verifizieren und Identität anzeigen
-      - name: Signatur verifizieren und Identity anzeigen
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: "true"
-        run: |
-          set -euo pipefail
+          # 2) Sofort verifizieren (liefert JSON inkl. cosign/sign/v1)
           cosign verify --experimental-oci11 \
             --certificate-identity-regexp=".*" \
             --certificate-oidc-issuer-regexp=".*" \
             "${IMAGE}" | jq
 
-      # Rekor-Eintrag abrufen und Fulcio-Zertifikatdetails anzeigen
-     # - name: Rekor-Record abrufen und Fulcio-Zertifikat analysieren
-      #  shell: bash
-       # run: |
-        #  set -euo pipefail
-#
- #         HASH="$(echo "${DIGEST}" | cut -d: -f2)"
-  #        UUID="$(rekor-cli search --sha "${HASH}" | head -n1)"
-   #       test -n "${UUID}"
-#
- #         rekor-cli get --uuid "${UUID}" --format json | tee /tmp/rekor.json >/dev/null
-#
- #         cat /tmp/rekor.json \
-  #          | jq -r '.Body.DSSEObj.signatures[0].verifier' \
-   #         | base64 -d \
-    #        | openssl x509 -text -noout \
-     #       | grep -E 'Issuer|Subject Alternative Name|Before|After|email|github|$'
+          # 3) Fallback: recursive sign (hilft bei Registry-Referrer-Eigenheiten)
+          #    (wird nicht als Fehler gewertet, falls es bereits korrekt ist)
+          cosign sign --yes --recursive --tlog-upload=true "${IMAGE}" || true
+
+      # (Optional, aber nützlich) Referrers anzeigen: Signaturen/Attestations müssen hier auftauchen
+      - name: Cosign Tree anzeigen (Referrers prüfen)
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          cosign tree --experimental-oci11 "${IMAGE}" || true
 
       # Provenance-Attestation signieren
       - name: Provenance Attestation signieren
@@ -270,8 +265,8 @@ jobs:
             --predicate attestations/sbom.json \
             "${IMAGE}"
 
-      # Vulnerability-Attestations signieren
-      - name: Vulnerability Attestations signieren
+      # Vulnerability-Attestations signieren (3x)
+      - name: Vulnerability Attestations signieren (Source/IaC/Image)
         shell: bash
         env:
           COSIGN_EXPERIMENTAL: "true"
@@ -285,15 +280,28 @@ jobs:
           cosign attest --yes --type vuln --predicate attestations/vuln-iac.json "${IMAGE}"
           cosign attest --yes --type vuln --predicate attestations/vuln-image.json "${IMAGE}"
 
-      # Rekor-Log prüfen (Transparenz)
-      - name: Rekor-Einträge prüfen
+      # Rekor-Log prüfen (mit Retry, da Rekor manchmal verzögert ist)
+      - name: Rekor-Einträge prüfen (mit Retry)
         shell: bash
         run: |
           set -euo pipefail
-          HASH="$(echo "${IMAGE}" | cut -d@ -f2 | cut -d: -f2)"
-          rekor-cli search --sha "${HASH}"
+          HASH="$(echo "${DIGEST}" | cut -d: -f2)"
+          echo "Rekor search SHA: ${HASH}"
 
-      # Lab-interne Validierung
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            OUT="$(rekor-cli search --sha "${HASH}" 2>/dev/null || true)"
+            if echo "${OUT}" | grep -q .; then
+              echo "${OUT}"
+              exit 0
+            fi
+            echo "Noch keine Rekor-Einträge sichtbar (Versuch ${i}/10). Warte 5s..."
+            sleep 5
+          done
+
+          echo "Keine Rekor-Einträge gefunden."
+          exit 1
+
+      # Lab-interne Validierung (muss am Ende laufen)
       - name: Phase 3 Validierung (Lab)
         shell: bash
         run: |
