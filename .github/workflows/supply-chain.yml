@@ -1,1 +1,70 @@
+name: supply-chain-lab
 
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  phase01-security-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Phase 0: Runterladen
+      - name: Install Task (go-task)
+        uses: go-task/setup-task@v1
+        with:
+          version: 3.x
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Verify tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          task --version
+          docker --version
+          git --version
+
+      # Phase 1: Security Scans
+      # Notiz an mich: Die Befehle müssen in der Taskfile sein
+      - name: Build scan tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          task build-tools
+
+      - name: Run all security scans (fail pipeline on HIGH/CRITICAL)
+        shell: bash
+        run: |
+          set -euo pipefail
+          task scan-all
+
+      # Build checks
+      - name: Build application
+        shell: bash
+        run: |
+          set -euo pipefail
+          task build
+
+      - name: Build container image
+        shell: bash
+        run: |
+          set -euo pipefail
+          task build-image
+
+      # Zusammenfassung Installation und Fehlersuche
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "Phase 0/1 complete: tooling + scans + build + image build"
