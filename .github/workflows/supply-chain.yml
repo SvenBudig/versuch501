@@ -183,7 +183,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          OWNER="${{ github.repository_owner }}"
+          # GHCR verlangt lowercase repository-Namen
+          OWNER_RAW="${{ github.repository_owner }}"
+          OWNER="$(echo "${OWNER_RAW}" | tr '[:upper:]' '[:lower:]')"
+
           IMAGE_REPO="ghcr.io/${OWNER}/supply-chain-app"
           TAG="${{ github.sha }}"
 
@@ -191,9 +194,9 @@ jobs:
           docker image inspect supply-chain-app:latest >/dev/null
 
           docker tag supply-chain-app:latest "${IMAGE_REPO}:${TAG}"
-
           docker push "${IMAGE_REPO}:${TAG}" 2>&1 | tee /tmp/push-output.txt
 
+          # Digest aus Push-Output extrahieren
           DIGEST="$(grep -m1 'digest:' /tmp/push-output.txt | awk '{print $3}')"
           test -n "${DIGEST}"
 
@@ -204,6 +207,7 @@ jobs:
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
           echo "Image: ${IMAGE}"
+
 
       # Container-Image signieren (keyless via GitHub OIDC)
       - name: Signiere das Container-Image (Cosign, keyless)
