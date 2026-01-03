@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 jobs:
-  phase01-security-and-build:
+  pipeline:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,16 +27,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Verify tools
+      - name: Verify base tools
         shell: bash
         run: |
           set -euo pipefail
           task --version
           docker --version
           git --version
+          jq --version
 
+      # -------------------------
       # Phase 1: Security Scans
-      # Notiz an mich: Die Befehle müssen in der Taskfile sein
+      # -------------------------
       - name: Build scan tools
         shell: bash
         run: |
@@ -49,7 +51,6 @@ jobs:
           set -euo pipefail
           task scan-all
 
-      # Build checks
       - name: Build application
         shell: bash
         run: |
@@ -62,9 +63,94 @@ jobs:
           set -euo pipefail
           task build-image
 
-      # Zusammenfassung Installation und Fehlersuche
+      # -------------------------
+      # Phase 2: Provenance + SBOM + Vuln Attestations
+      # -------------------------
+
+      - name: Create docker-container buildx builder (for provenance/SBOM)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx create --name container-builder --driver docker-container --use
+          docker buildx inspect --bootstrap
+
+      - name: Build image with attestation artifacts in out/
+        shell: bash
+        run: |
+          set -euo pipefail
+          task build-image-with-attestation
+          test -f out/provenance.json
+          test -f out/sbom.spdx.json
+
+      - name: Prepare attestations folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p attestations
+
+      - name: Extract provenance predicate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat out/provenance.json | jq .predicate | tee attestations/provenance.json >/dev/null
+          test -s attestations/provenance.json
+
+      - name: Validate provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          task validate_provenance
+
+      - name: Extract SBOM predicate (SPDX)
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq '.predicate' out/sbom.spdx.json > attestations/sbom.json
+          test -s attestations/sbom.json
+
+      - name: Quick SBOM sanity checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq 'keys' attestations/sbom.json >/dev/null
+          jq -r '.spdxVersion' attestations/sbom.json
+          jq '.packages | length' attestations/sbom.json
+          jq '.packages[5:20] | .[] | {name, versionInfo}' attestations/sbom.json
+
+      - name: Validate SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          task validate:sbom
+
+      - name: Generate vulnerability predicates (source, IaC, image)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Source scan -> in-toto predicate
+          task exec -- trivy fs --format cosign-vuln src/ > attestations/vuln-source.json
+          test -s attestations/vuln-source.json
+
+          # IaC scan -> in-toto predicate
+          task exec -- trivy config --format cosign-vuln src/iac/ > attestations/vuln-iac.json
+          test -s attestations/vuln-iac.json
+
+          # Image scan -> in-toto predicate
+          # Assumes local tag "supply-chain-app:latest" exists after build-image-with-attestation.
+          task exec -- trivy image --format cosign-vuln supply-chain-app:latest > attestations/vuln-image.json
+          test -s attestations/vuln-image.json
+
+      - name: Validate all attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          task validate:all-attestations
+
+      # Zusammenfassung
       - name: Summary
         if: always()
         shell: bash
         run: |
           echo "Phase 0/1 complete: tooling + scans + build + image build"
+          echo "Phase 2 complete: provenance + SBOM + vuln predicates extracted and validated"
