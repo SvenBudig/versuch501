@@ -12,3 +12,5 @@ Rekor = Transparentes Log (Append Only)
 
 Fulcio = CA für CICD
 Github Actions authentifiziert sich -> Fulcio stellt temporäres Zert aus
+
+Cosign = Signier und Verifikationswerkzeug für Container-Artefakte (Teil von Sigstore)
