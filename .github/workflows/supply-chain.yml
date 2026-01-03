@@ -99,7 +99,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          task validate_provenance
+          task validate:provenance
 
       - name: Extract SBOM predicate (SPDX)
         shell: bash
@@ -132,11 +132,11 @@ jobs:
           task exec -- trivy fs --format cosign-vuln src/ > attestations/vuln-source.json
           test -s attestations/vuln-source.json
 
-          # IaC scan -> in-toto predicate
+          # IaC scan 
           task exec -- trivy config --format cosign-vuln src/iac/ > attestations/vuln-iac.json
           test -s attestations/vuln-iac.json
 
-          # Image scan -> in-toto predicate
+          # Image scan 
           # Assumes local tag "supply-chain-app:latest" exists after build-image-with-attestation.
           task exec -- trivy image --format cosign-vuln supply-chain-app:latest > attestations/vuln-image.json
           test -s attestations/vuln-image.json
