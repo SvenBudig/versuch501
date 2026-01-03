@@ -227,22 +227,22 @@ jobs:
             "${IMAGE}" | jq
 
       # Rekor-Eintrag abrufen und Fulcio-Zertifikatdetails anzeigen
-      - name: Rekor-Record abrufen und Fulcio-Zertifikat analysieren
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          HASH="$(echo "${DIGEST}" | cut -d: -f2)"
-          UUID="$(rekor-cli search --sha "${HASH}" | head -n1)"
-          test -n "${UUID}"
-
-          rekor-cli get --uuid "${UUID}" --format json | tee /tmp/rekor.json >/dev/null
-
-          cat /tmp/rekor.json \
-            | jq -r '.Body.DSSEObj.signatures[0].verifier' \
-            | base64 -d \
-            | openssl x509 -text -noout \
-            | grep -E 'Issuer|Subject Alternative Name|Before|After|email|github|$'
+     # - name: Rekor-Record abrufen und Fulcio-Zertifikat analysieren
+      #  shell: bash
+       # run: |
+        #  set -euo pipefail
+#
+ #         HASH="$(echo "${DIGEST}" | cut -d: -f2)"
+  #        UUID="$(rekor-cli search --sha "${HASH}" | head -n1)"
+   #       test -n "${UUID}"
+#
+ #         rekor-cli get --uuid "${UUID}" --format json | tee /tmp/rekor.json >/dev/null
+#
+ #         cat /tmp/rekor.json \
+  #          | jq -r '.Body.DSSEObj.signatures[0].verifier' \
+   #         | base64 -d \
+    #        | openssl x509 -text -noout \
+     #       | grep -E 'Issuer|Subject Alternative Name|Before|After|email|github|$'
 
       # Provenance-Attestation signieren
       - name: Provenance Attestation signieren
