@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Phase 0: Runterladen
+      # Phase 0: Runterladen (CI-geeignet)
       - name: Install Task (go-task)
         uses: go-task/setup-task@v1
         with:
@@ -35,6 +35,7 @@ jobs:
           docker --version
           git --version
           jq --version
+          openssl version
 
       # -------------------------
       # Phase 1: Security Scans
@@ -64,10 +65,9 @@ jobs:
           task build-image
 
       # -------------------------
-      # Phase 2: Provenance + SBOM + Vuln Attestations
+      # Phase 2: Provenance + SBOM + Vuln-Predicates + Validation
       # -------------------------
-
-      - name: Create docker-container buildx builder (for provenance/SBOM)
+      - name: Create docker-container buildx builder (für Provenance/SBOM)
         shell: bash
         run: |
           set -euo pipefail
@@ -132,12 +132,11 @@ jobs:
           task exec -- trivy fs --format cosign-vuln src/ > attestations/vuln-source.json
           test -s attestations/vuln-source.json
 
-          # IaC scan 
+          # IaC scan -> in-toto predicate
           task exec -- trivy config --format cosign-vuln src/iac/ > attestations/vuln-iac.json
           test -s attestations/vuln-iac.json
 
-          # Image scan 
-          # Assumes local tag "supply-chain-app:latest" exists after build-image-with-attestation.
+          # Image scan -> in-toto predicate (setzt lokales Tag voraus)
           task exec -- trivy image --format cosign-vuln supply-chain-app:latest > attestations/vuln-image.json
           test -s attestations/vuln-image.json
 
@@ -147,6 +146,162 @@ jobs:
           set -euo pipefail
           task validate:all-attestations
 
+      # -------------------------
+      # Phase 3: Signieren + Transparenz (Fulcio/Rekor) + Verifikation
+      # -------------------------
+
+      # Cosign installieren (Sigstore Client)
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.2.4"
+
+      # Rekor CLI installieren (Transparenz-Log Abfragen)
+      - name: Install rekor-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          REKOR_VERSION="v1.3.6"
+          curl -sSfL "https://github.com/sigstore/rekor/releases/download/${REKOR_VERSION}/rekor-cli-linux-amd64" -o rekor-cli
+          chmod +x rekor-cli
+          sudo mv rekor-cli /usr/local/bin/rekor-cli
+          rekor-cli version
+          cosign version
+
+      # In GHCR einloggen (für Push)
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Image nach GHCR taggen + pushen + Digest extrahieren
+      - name: Push Image to GHCR and capture digest
+        id: push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OWNER="${{ github.repository_owner }}"
+          IMAGE_REPO="ghcr.io/${OWNER}/supply-chain-app"
+          TAG="${{ github.sha }}"
+
+          # Sicherstellen, dass das lokale Image existiert
+          docker image inspect supply-chain-app:latest >/dev/null
+
+          docker tag supply-chain-app:latest "${IMAGE_REPO}:${TAG}"
+
+          docker push "${IMAGE_REPO}:${TAG}" 2>&1 | tee /tmp/push-output.txt
+
+          DIGEST="$(grep -m1 'digest:' /tmp/push-output.txt | awk '{print $3}')"
+          test -n "${DIGEST}"
+
+          IMAGE="${IMAGE_REPO}@${DIGEST}"
+
+          echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+          echo "Image: ${IMAGE}"
+
+      # Container-Image signieren (keyless via GitHub OIDC)
+      - name: Signiere das Container-Image (Cosign, keyless)
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          task exec -- cosign sign --yes "${IMAGE}"
+
+      # Signatur verifizieren + Identity ausgeben
+      - name: Verifiziere Signatur und zeige Identity
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          task exec -- cosign verify --experimental-oci11 \
+            --certificate-identity-regexp=".*" \
+            --certificate-oidc-issuer-regexp=".*" \
+            "${IMAGE}" | jq
+
+      # Rekor-Record ziehen und Fulcio-Zertifikatdetails anzeigen
+      - name: Rekor Record abrufen und Fulcio Zertifikatdetails ausgeben
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HASH="$(echo "${DIGEST}" | cut -d: -f2)"
+          test -n "${HASH}"
+
+          UUID="$(task exec -- rekor-cli search --sha "${HASH}" | head -n1)"
+          test -n "${UUID}"
+
+          task exec -- rekor-cli get --uuid "${UUID}" --format json | tee /tmp/rekor.json >/dev/null
+
+          # Kurzlebiges Zertifikat aus Rekor extrahieren und interessante Felder anzeigen
+          cat /tmp/rekor.json \
+            | jq -r '.Body.DSSEObj.signatures[0].verifier' \
+            | base64 -d \
+            | openssl x509 -text -noout \
+            | grep -E 'Issuer|Subject Alternative Name|Before|After|email|github|$'
+
+      # Attestations signieren (Provenance, SBOM, 3x Vuln)
+      - name: Signiere Provenance Attestation
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          test -s attestations/provenance.json
+          task exec -- cosign attest --yes \
+            --type slsaprovenance \
+            --predicate attestations/provenance.json \
+            "${IMAGE}"
+
+      - name: Signiere SBOM Attestation
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          test -s attestations/sbom.json
+          task exec -- cosign attest --yes \
+            --type spdxjson \
+            --predicate attestations/sbom.json \
+            "${IMAGE}"
+
+      - name: Signiere Vulnerability Attestations (Source/IaC/Image)
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          set -euo pipefail
+          test -s attestations/vuln-source.json
+          test -s attestations/vuln-iac.json
+          test -s attestations/vuln-image.json
+
+          task exec -- cosign attest --yes --type vuln --predicate attestations/vuln-source.json "${IMAGE}"
+          task exec -- cosign attest --yes --type vuln --predicate attestations/vuln-iac.json "${IMAGE}"
+          task exec -- cosign attest --yes --type vuln --predicate attestations/vuln-image.json "${IMAGE}"
+
+      # Rekor Log: Einträge für den Digest prüfen (Transparenz)
+      - name: Prüfe Rekor-Einträge (search by sha)
+        shell: bash
+        run: |
+          set -euo pipefail
+          HASH="$(echo "${IMAGE}" | cut -d@ -f2 | cut -d: -f2)"
+          test -n "${HASH}"
+          task exec -- rekor-cli search --sha "${HASH}"
+
+      # Lab-interne Validierung (wenn im Taskfile vorhanden)
+      - name: Phase 3 Validierung (Lab)
+        shell: bash
+        run: |
+          set -euo pipefail
+          task validate:phase3
+
       # Zusammenfassung
       - name: Summary
         if: always()
@@ -154,3 +309,4 @@ jobs:
         run: |
           echo "Phase 0/1 complete: tooling + scans + build + image build"
           echo "Phase 2 complete: provenance + SBOM + vuln predicates extracted and validated"
+          echo "Phase 3 complete: pushed image, signed image+attestations, checked Rekor, ran validate:phase3"
