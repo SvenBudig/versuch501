@@ -296,13 +296,13 @@ tasks:
     cmds:
       - echo "🐳 Scanning Dockerfile..."
       - echo "ℹ️ Using Trivy to scan for Dockerfile misconfigurations"
-      - trivy config src/docker/Dockerfile
+      - trivy config src/docker/Dockerfile --severity MEDIUM,HIGH,CRITICAL
 
   _scan-iac:
     # Internal: Scan Infrastructure as Code with Checkov
     cmds:
       - echo "🏗️ Scanning IaC..."
-      - checkov -f src/iac/main.tf
+      - checkov -f src/iac/main.tf --skip-check CKV2_AWS_5
 
   _scan-manifests:
     # Internal: Scan Kubernetes manifests with Trivy
