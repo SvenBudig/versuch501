@@ -155,7 +155,7 @@ jobs:
       - name: Installiere Cosign
         uses: sigstore/cosign-installer@v3
         with:
-          cosign-release: "v2.2.4"
+          cosign-release: "v3.0.4"
 
       # Rekor CLI installieren (Transparenz-Log)
       - name: Installiere Rekor CLI
