@@ -218,7 +218,9 @@ jobs:
           set -euo pipefail
 
           # 1) Image signieren und Rekor Upload erzwingen
-          cosign sign --yes --tlog-upload=true "${IMAGE}"
+          #cosign sign --yes --tlog-upload=true "${IMAGE}"
+          cosign sign --yes ${IMAGE}
+          
 
           # 2) Sofort verifizieren (liefert JSON inkl. cosign/sign/v1)
           cosign verify --experimental-oci11 \
@@ -230,7 +232,6 @@ jobs:
           #    (wird nicht als Fehler gewertet, falls es bereits korrekt ist)
           cosign sign --yes --recursive --tlog-upload=true "${IMAGE}" || true
 
-      # (Optional, aber nützlich) Referrers anzeigen: Signaturen/Attestations müssen hier auftauchen
       - name: Cosign Tree anzeigen (Referrers prüfen)
         shell: bash
         env:
@@ -300,6 +301,92 @@ jobs:
 
           echo "Keine Rekor-Einträge gefunden."
           exit 1
+
+      #Erneuter Debug
+      # Add this as a step inside your GitHub Actions job (after you set IMAGE/DIGEST)
+      - name: Debug Phase 3 (signature, attestations, rekor)
+        shell: bash
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ env.DIGEST }}
+        run: |
+          set -euo pipefail
+      
+          echo "=== DEBUG: inputs ==="
+          echo "IMAGE=${IMAGE:-<unset>}"
+          echo "DIGEST=${DIGEST:-<unset>}"
+          echo ""
+      
+          if [ -z "${DIGEST:-}" ]; then
+            echo "❌ DIGEST not set"
+            exit 1
+          fi
+          if [ -z "${IMAGE:-}" ]; then
+            echo "❌ IMAGE not set"
+            exit 1
+          fi
+      
+          HASH="$(echo "$DIGEST" | cut -d: -f2)"
+          echo "HASH=$HASH"
+          echo ""
+      
+          echo "=== DEBUG: tool versions ==="
+          cosign version || true
+          rekor-cli version || true
+          jq --version || true
+          echo ""
+      
+          echo "=== DEBUG: cosign tree (artifacts attached to IMAGE) ==="
+          cosign tree --experimental-oci11 "$IMAGE" || true
+          echo ""
+      
+          echo "=== DEBUG: cosign verify (raw output) ==="
+          VERIFY_RAW="$(cosign verify --experimental-oci11 \
+            --certificate-identity-regexp='.*' \
+            --certificate-oidc-issuer-regexp='.*' \
+            "$IMAGE" 2>&1 || true)"
+          echo "$VERIFY_RAW"
+          echo ""
+      
+          echo "=== DEBUG: signature objects (cosign/sign/v1) ==="
+          JSON_LINES="$(echo "$VERIFY_RAW" | grep -E '^\[.*\]$' || true)"
+          if [ -n "$JSON_LINES" ]; then
+            SIG_COUNT="$(echo "$JSON_LINES" | jq '[.[] | select(.critical.type=="https://sigstore.dev/cosign/sign/v1")] | length' 2>/dev/null || echo "0")"
+            echo "Signature objects found: $SIG_COUNT"
+            if [ "$SIG_COUNT" -ge 1 ]; then
+              echo "✅ Signature present per verify output"
+            else
+              echo "❌ No signature object found in verify JSON (cosign/sign/v1)"
+            fi
+          else
+            echo "No JSON array line found in cosign verify output."
+            echo "If verify says 'no signatures found', you likely signed a different IMAGE/ref."
+          fi
+          echo ""
+      
+          echo "=== DEBUG: attestations (probe by type) ==="
+          for T in slsaprovenance spdxjson vuln; do
+            echo "--- type=$T ---"
+            if cosign verify-attestation --experimental-oci11 \
+              --type "$T" \
+              --certificate-identity-regexp='.*' \
+              --certificate-oidc-issuer-regexp='.*' \
+              "$IMAGE" >/dev/null 2>&1; then
+              echo "✅ verify-attestation ok for type=$T"
+            else
+              echo "❌ verify-attestation failed for type=$T"
+            fi
+          done
+          echo ""
+      
+          echo "=== DEBUG: rekor entries for DIGEST ==="
+          REKOR_OUT="$(rekor-cli search --sha "$HASH" 2>/dev/null || true)"
+          echo "$REKOR_OUT"
+          COUNT="$(echo "$REKOR_OUT" | grep -c '^[a-f0-9]' || echo "0")"
+          echo "Rekor entry count: $COUNT"
+          echo ""
+
+
 
       # Lab-interne Validierung (muss am Ende laufen)
       - name: Phase 3 Validierung (Lab)
