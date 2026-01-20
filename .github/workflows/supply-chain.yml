@@ -154,7 +154,7 @@ jobs:
       # Cosign installieren (Sigstore Client)
       - name: Installiere Cosign
         # uses: sigstore/cosign-installer@v3
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.0.0
         with:
           cosign-release: "v3.0.4"
 
