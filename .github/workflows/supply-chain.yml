@@ -153,9 +153,16 @@ jobs:
 
       # Cosign installieren (Sigstore Client)
       - name: Installiere Cosign
-        uses: sigstore/cosign-installer@v3
+        # uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4
         with:
-          cosign-release: "v2.6.2"
+          cosign-release: "v3.0.4"
+
+        # Zeig Version Ya Hobbi
+      - name: Show Cosign version
+        shell: bash
+        run: cosign version
+          
 
       # Rekor CLI installieren (Transparenz-Log)
       - name: Installiere Rekor CLI
