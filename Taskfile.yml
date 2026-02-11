@@ -289,14 +289,14 @@ tasks:
     cmds:
       - echo "📦 Scanning dependencies..."
       - echo "ℹ️ Using Trivy to scan for vulnerable dependencies"
-      - trivy fs --scanners vuln --severity HIGH,CRITICAL src/app/
+      - trivy fs --scanners vuln --severity HIGH,CRITICAL src/app/ 
 
   _scan-dockerfile:
     # Internal: Scan Dockerfile configuration with Trivy
     cmds:
       - echo "🐳 Scanning Dockerfile..."
       - echo "ℹ️ Using Trivy to scan for Dockerfile misconfigurations"
-      - trivy config src/docker/Dockerfile --severity MEDIUM,HIGH,CRITICAL
+      - trivy config src/docker/Dockerfile --severity MEDIUM,HIGH,CRITICAL --exit-code 1
 
   _scan-iac:
     # Internal: Scan Infrastructure as Code with Checkov
@@ -308,14 +308,14 @@ tasks:
     # Internal: Scan Kubernetes manifests with Trivy
     cmds:
       - echo "☸️ Scanning manifests..."
-      - trivy config src/k8s/ --severity HIGH,CRITICAL
+      - trivy config src/k8s/ --severity HIGH,CRITICAL --exit-code 1
 
   _scan-image:
     # Internal: Scan container image with Trivy
     cmds:
       - echo "🔍 Scanning container image..."
       - echo "ℹ️ Using Trivy to scan for vulnerabilities in built image"
-      - trivy image supply-chain-app:latest --scanners vuln --severity HIGH,CRITICAL
+      - trivy image supply-chain-app:latest --scanners vuln --severity HIGH,CRITICAL 
 
   _generate-sbom:
     # Internal: Generate Software Bill of Materials with Syft
