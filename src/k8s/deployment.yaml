@@ -21,11 +21,9 @@ spec:
         ports:
         - containerPort: 5000
         securityContext:
-         # privileged: false
-         privileged: true
-          #runAsNonRoot: true 
-          #readOnlyRootFilesystem: true
-          runAsUser: 0
+          privileged: false
+          runAsNonRoot: true 
+          readOnlyRootFilesystem: true
           
 ---
 apiVersion: v1
