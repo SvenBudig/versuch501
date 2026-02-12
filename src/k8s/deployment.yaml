@@ -12,14 +12,18 @@ spec:
       labels:
         app: myapp
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
       containers:
       - name: app
         image: myapp:latest
         ports:
         - containerPort: 5000
         securityContext:
-          privileged: true
-          runAsUser: 0
+          privileged: false
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
 ---
 apiVersion: v1
 kind: Service
