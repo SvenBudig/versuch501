@@ -298,7 +298,7 @@ tasks:
     cmds:
       - echo "🐳 Scanning Dockerfile..."
       - echo "ℹ️ Using Trivy to scan for Dockerfile misconfigurations"
-      - trivy config --severity MEDIUM,HIGH,CRITICAL --exit-code 1 src/docker/Dockerfile
+      - trivy config --severity LOW,MEDIUM,HIGH,CRITICAL --exit-code 1 src/docker/Dockerfile
 
   _scan-iac:
     # Internal: Scan Infrastructure as Code with Checkov
