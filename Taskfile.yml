@@ -57,6 +57,7 @@ tasks:
   scan-manifests:
     desc: "☸️ Scan K8s manifests in Docker"
     cmds:
+      - pwd && ls -la src/k8s/
       - "{{.DOCKER_RUN}} task _scan-manifests"
 
   generate-sbom:
