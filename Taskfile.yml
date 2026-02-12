@@ -310,7 +310,7 @@ tasks:
     # Internal: Scan Kubernetes manifests with Trivy
     cmds:
       - echo "☸️ Scanning manifests..."
-      - trivy config --severity HIGH,CRITICAL src/k8s/deployment.yaml --exit-code 1
+      - trivy config --severity HIGH,CRITICAL src/k8s/ --exit-code 1
 
   _scan-image:
     # Internal: Scan container image with Trivy
