@@ -237,7 +237,7 @@ jobs:
 
           # 3) Fallback: recursive sign (hilft bei Registry-Referrer-Eigenheiten)
           #    (wird nicht als Fehler gewertet, falls es bereits korrekt ist)
-          cosign sign --yes --recursive --tlog-upload=true "${IMAGE}" || true
+          # cosign sign --yes --recursive --tlog-upload=true "${IMAGE}" || true
 
       - name: Cosign Tree anzeigen (Referrers prüfen)
         shell: bash
